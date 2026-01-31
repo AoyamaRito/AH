@@ -63,9 +63,15 @@ func main() {
         http.Redirect(w, r, "/AH/board-3d/", http.StatusTemporaryRedirect)
     })
 
-    // Static files from root
+    // Static files from root with root redirect
     fs := http.FileServer(http.Dir(absRoot))
-    mux.Handle("/", logRequests(securityHeaders(fs)))
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+            http.Redirect(w, r, "/AH/board-3d/", http.StatusTemporaryRedirect)
+            return
+        }
+        logRequests(securityHeaders(fs)).ServeHTTP(w, r)
+    })
 
     srv := &http.Server{
         Addr:              *addr,
