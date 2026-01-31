@@ -188,7 +188,8 @@
   const TILE_SIZE = 1.0; // world units per tile
   let BOARD = { cols: COLS, rows: ROWS };
   let BOARD_LOCKED = false; // if true, don't auto-adjust rows from image aspect
-  let BOARD_UV = { u0: 0, v0: 0, u1: 1, v1: 1 }; // crop rect within the board image
+  let BOARD_UV = { u0: 0, v0: 0, u1: 1, v1: 1 }; // texture region drawn for board image
+  let GRID_UV  = { u0: 0, v0: 0, u1: 1, v1: 1 };  // logical grid region (for tile mapping)
   const AUTO_CROP = false; // 黒帯自動トリムを無効化
 
   // Create board texture exactly matching tile count
@@ -305,10 +306,19 @@
     const t = -pNear[1] / dy; if (t <= 0) { hover.x=-1; hover.y=-1; return; }
     const hitX = pNear[0] + dir[0]*t;
     const hitZ = pNear[2] + dir[2]*t;
-    const xIdx = Math.floor(hitX / TILE_SIZE + BOARD.cols/2);
-    const yIdx = Math.floor(hitZ / TILE_SIZE + BOARD.rows/2);
-    if (xIdx >= 0 && xIdx < BOARD.cols && yIdx >= 0 && yIdx < BOARD.rows) { hover.x = xIdx; hover.y = yIdx; }
-    else { hover.x = -1; hover.y = -1; }
+    const halfW = (BOARD.cols * TILE_SIZE) / 2;
+    const halfH = (BOARD.rows * TILE_SIZE) / 2;
+    // normalize world to [0,1] across full plane
+    const nux = (hitX + halfW) / (2*halfW);
+    const nuy = (hitZ + halfH) / (2*halfH);
+    // map to grid region
+    const gux = (nux - GRID_UV.u0) / (GRID_UV.u1 - GRID_UV.u0);
+    const guy = (nuy - GRID_UV.v0) / (GRID_UV.v1 - GRID_UV.v0);
+    const xIdx = Math.floor(gux * BOARD.cols);
+    const yIdx = Math.floor(guy * BOARD.rows);
+    if (gux >= 0 && gux < 1 && guy >= 0 && guy < 1 && xIdx >= 0 && xIdx < BOARD.cols && yIdx >= 0 && yIdx < BOARD.rows) {
+      hover.x = xIdx; hover.y = yIdx;
+    } else { hover.x = -1; hover.y = -1; }
   }
 
   // Character support
@@ -391,8 +401,14 @@
   }
 
   function worldFromTile(x, y) {
-    const wx = (x - BOARD.cols/2 + 0.5) * TILE_SIZE;
-    const wz = (y - BOARD.rows/2 + 0.5) * TILE_SIZE;
+    const halfW = (BOARD.cols * TILE_SIZE) / 2;
+    const halfH = (BOARD.rows * TILE_SIZE) / 2;
+    // tile center in grid-UV space
+    const u = GRID_UV.u0 + (x + 0.5) * (GRID_UV.u1 - GRID_UV.u0) / BOARD.cols;
+    const v = GRID_UV.v0 + (y + 0.5) * (GRID_UV.v1 - GRID_UV.v0) / BOARD.rows;
+    // map UV [0,1] to world [-halfW, halfW] etc.
+    const wx = -halfW + u * (2*halfW);
+    const wz = -halfH + v * (2*halfH);
     return [wx, 0.01, wz];
   }
 
@@ -524,6 +540,12 @@
               const c = data.board.crop;
               if (Number.isFinite(c.u0) && Number.isFinite(c.v0) && Number.isFinite(c.u1) && Number.isFinite(c.v1)) {
                 BOARD_UV = { u0: Number(c.u0), v0: Number(c.v0), u1: Number(c.u1), v1: Number(c.v1) };
+              }
+            }
+            if (data.board.grid && typeof data.board.grid === 'object') {
+              const g = data.board.grid;
+              if (Number.isFinite(g.u0) && Number.isFinite(g.v0) && Number.isFinite(g.u1) && Number.isFinite(g.v1)) {
+                GRID_UV = { u0: Number(g.u0), v0: Number(g.v0), u1: Number(g.u1), v1: Number(g.v1) };
               }
             }
           }

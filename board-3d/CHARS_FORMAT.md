@@ -46,6 +46,13 @@
 - Image recommendations: PNG with transparent background. Place under `AH/img/Chara/`.
 - If an image fails to load, a placeholder circle with the initial letter is rendered.
 
+Grid vs Image
+- By default the grid spans the entire plane (`grid = {u0:0,v0:0,u1:1,v1:1}`), independent of the image.
+- If the board area in the image does not cover the full texture (e.g. side black panel), specify:
+  - `board.grid`: normalized UV rectangle where the 6×6 grid lives, e.g.
+    - `"grid": { "u0": 0.0, "v0": 0.0, "u1": 0.78, "v1": 1.0 }`
+- This affects hover/click placement and character tile positions, without cropping the image.
+
 Board image
 - By default, `../img/Board_AH2.jpg` is used. Override with `board.image` (relative path from `AH/board-3d/`).
 - The plane aspect is auto-adjusted from the image width/height while preserving `board.cols`.
