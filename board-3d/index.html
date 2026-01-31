@@ -153,6 +153,7 @@
   const ROWS = 10;   // default tiles in Z
   const TILE_SIZE = 1.0; // world units per tile
   let BOARD = { cols: COLS, rows: ROWS };
+  let BOARD_LOCKED = false; // if true, don't auto-adjust rows from image aspect
 
   // Create board texture exactly matching tile count
   function makeBoardTexture(cols, rows) {
@@ -227,6 +228,7 @@
     buildBoardMesh(BOARD.cols, BOARD.rows);
     updateHUD();
   }
+  function lockBoardDims() { BOARD_LOCKED = true; }
 
   // Camera
   function updateCamera() {
@@ -283,7 +285,7 @@
   }
 
   function updateHUD() {
-    hud.textContent = `Board: ${COLS} x ${ROWS}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}`;
+    hud.textContent = `Board: ${BOARD.cols} x ${BOARD.rows}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}`;
   }
 
   async function addCharacter(c) {
@@ -374,6 +376,7 @@
           if (data.board) {
             if (Number.isFinite(data.board.cols) && Number.isFinite(data.board.rows)) {
               updateBoardDims(Number(data.board.cols), Number(data.board.rows));
+              lockBoardDims();
             }
             if (typeof data.board.image === 'string' && data.board.image.length > 0) {
               IMAGE_URL = data.board.image;
@@ -401,7 +404,7 @@
     try {
       const img = await loadImage(IMAGE_URL);
       setBoardTextureFromImage(img);
-      if (img.width > 0 && img.height > 0) {
+      if (!BOARD_LOCKED && img.width > 0 && img.height > 0) {
         const aspectW = BOARD.cols;
         const aspectH = Math.max(1, Math.round(BOARD.cols * (img.height / img.width)));
         updateBoardDims(aspectW, aspectH);
