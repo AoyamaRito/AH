@@ -1,5 +1,5 @@
 {
-  "board": { "cols": 5, "rows": 6, "image": "../img/Board_AH2.jpg" },
+  "board": { "cols": 6, "rows": 6, "image": "../img/Board_AH2.jpg" },
   "characters": [
     {
       "id": "amelda",

@@ -125,6 +125,9 @@
         gl.bindVertexArray(m.vao);
         const uM = gl.getUniformLocation(p, 'u_matrix');
         gl.uniformMatrix4fv(uM, false, cmd.matrix);
+        const uvRect = Array.isArray(cmd.uvRect) && cmd.uvRect.length === 4 ? cmd.uvRect : [0,0,1,1];
+        const uUV = gl.getUniformLocation(p, 'u_uvRect');
+        if (uUV) gl.uniform4fv(uUV, new Float32Array(uvRect));
         if (t) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t); }
         gl.drawArrays(gl.TRIANGLES, 0, m.count);
       });
@@ -141,8 +144,13 @@
   // Shader: textured sprite
   R.createProgram('sprite', `#version 300 es
     layout(location=0) in vec4 a_pos; layout(location=1) in vec2 a_uv;
-    uniform mat4 u_matrix; out vec2 v_uv;
-    void main(){ gl_Position = u_matrix * a_pos; v_uv = a_uv; }
+    uniform mat4 u_matrix; uniform vec4 u_uvRect; // (u0,v0,u1,v1)
+    out vec2 v_uv;
+    void main(){
+      gl_Position = u_matrix * a_pos;
+      v_uv = vec2(u_uvRect.x + a_uv.x * (u_uvRect.z - u_uvRect.x),
+                  u_uvRect.y + a_uv.y * (u_uvRect.w - u_uvRect.y));
+    }
   `, `#version 300 es
     precision highp float; in vec2 v_uv; uniform sampler2D u_tex; out vec4 o;
     void main(){ vec4 tex = texture(u_tex, v_uv); if (tex.a < 0.01) discard; o = tex; }
@@ -154,6 +162,7 @@
   const TILE_SIZE = 1.0; // world units per tile
   let BOARD = { cols: COLS, rows: ROWS };
   let BOARD_LOCKED = false; // if true, don't auto-adjust rows from image aspect
+  let BOARD_UV = { u0: 0, v0: 0, u1: 1, v1: 1 }; // crop rect within the board image
 
   // Create board texture exactly matching tile count
   function makeBoardTexture(cols, rows) {
@@ -267,6 +276,51 @@
 
   const characters = []; // { id, name, imgUrl, pos:{x,y}, textureId }
 
+  // Heuristic: auto-crop black margins from board image
+  async function autoCropBlack(img) {
+    try {
+      const maxW = 512;
+      const scale = Math.min(1, maxW / img.width);
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+      const data = g.getImageData(0, 0, w, h).data;
+      const isNonBlackCol = new Array(w).fill(false);
+      const isNonBlackRow = new Array(h).fill(false);
+      const strideY = Math.max(1, Math.floor(h / 64));
+      const strideX = Math.max(1, Math.floor(w / 64));
+      const thr = 16;
+      for (let x = 0; x < w; x++) {
+        let count = 0, total = 0;
+        for (let y = 0; y < h; y += strideY) {
+          const i = (y * w + x) * 4; const r = data[i], gg = data[i+1], b = data[i+2];
+          const bright = (r + gg + b) / 3;
+          if (bright > thr) count++;
+          total++;
+        }
+        if (count > total * 0.05) isNonBlackCol[x] = true;
+      }
+      for (let y = 0; y < h; y++) {
+        let count = 0, total = 0;
+        for (let x = 0; x < w; x += strideX) {
+          const i = (y * w + x) * 4; const r = data[i], gg = data[i+1], b = data[i+2];
+          const bright = (r + gg + b) / 3;
+          if (bright > thr) count++;
+          total++;
+        }
+        if (count > total * 0.05) isNonBlackRow[y] = true;
+      }
+      let x0 = 0; while (x0 < w && !isNonBlackCol[x0]) x0++;
+      let x1 = w-1; while (x1 >= 0 && !isNonBlackCol[x1]) x1--;
+      let y0 = 0; while (y0 < h && !isNonBlackRow[y0]) y0++;
+      let y1 = h-1; while (y1 >= 0 && !isNonBlackRow[y1]) y1--;
+      if (x1 <= x0 || y1 <= y0) return null;
+      const u0 = x0 / w, v0 = y0 / h, u1 = (x1+1) / w, v1 = (y1+1) / h;
+      return { u0, v0, u1, v1 };
+    } catch { return null; }
+  }
+
   function worldFromTile(x, y) {
     const wx = (x - BOARD.cols/2 + 0.5) * TILE_SIZE;
     const wz = (y - BOARD.rows/2 + 0.5) * TILE_SIZE;
@@ -285,7 +339,8 @@
   }
 
   function updateHUD() {
-    hud.textContent = `Board: ${BOARD.cols} x ${BOARD.rows}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}`;
+    const uv = BOARD_UV;
+    hud.textContent = `Board: ${BOARD.cols} x ${BOARD.rows}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}  |  uv=(${uv.u0.toFixed(2)},${uv.v0.toFixed(2)}→${uv.u1.toFixed(2)},${uv.v1.toFixed(2)})`;
   }
 
   async function addCharacter(c) {
@@ -334,7 +389,8 @@
     const vp = updateCamera();
     const model = Mat4.identity();
     const mvp = Mat4.multiply(vp, model);
-    const cmds = [{ pId: 'sprite', mId: 'board', tId: 'tex_board', matrix: mvp }];
+    const uv = BOARD_UV; const uvRect = [uv.u0, uv.v0, uv.u1, uv.v1];
+    const cmds = [{ pId: 'sprite', mId: 'board', tId: 'tex_board', matrix: mvp, uvRect }];
 
     // draw characters
     const charScale = TILE_SIZE * 0.9;
@@ -381,6 +437,12 @@
             if (typeof data.board.image === 'string' && data.board.image.length > 0) {
               IMAGE_URL = data.board.image;
             }
+            if (data.board.crop && typeof data.board.crop === 'object') {
+              const c = data.board.crop;
+              if (Number.isFinite(c.u0) && Number.isFinite(c.v0) && Number.isFinite(c.u1) && Number.isFinite(c.v1)) {
+                BOARD_UV = { u0: Number(c.u0), v0: Number(c.v0), u1: Number(c.u1), v1: Number(c.v1) };
+              }
+            }
           }
           if (Array.isArray(data.characters)) {
             pendingChars = data.characters.filter(ch => ch && ch.id && ch.pos);
@@ -404,10 +466,16 @@
     try {
       const img = await loadImage(IMAGE_URL);
       setBoardTextureFromImage(img);
-      if (!BOARD_LOCKED && img.width > 0 && img.height > 0) {
-        const aspectW = BOARD.cols;
-        const aspectH = Math.max(1, Math.round(BOARD.cols * (img.height / img.width)));
-        updateBoardDims(aspectW, aspectH);
+      if (img.width > 0 && img.height > 0) {
+        if (!BOARD_LOCKED) {
+          const aspectW = BOARD.cols;
+          const aspectH = Math.max(1, Math.round(BOARD.cols * (img.height / img.width)));
+          updateBoardDims(aspectW, aspectH);
+        }
+        if (BOARD_UV.u0 === 0 && BOARD_UV.v0 === 0 && BOARD_UV.u1 === 1 && BOARD_UV.v1 === 1) {
+          const crop = await autoCropBlack(img);
+          if (crop) BOARD_UV = crop;
+        }
         hud.textContent += `  |  Image: ${IMAGE_URL.split('/').pop()} (${img.width}x${img.height})`;
         usingImage = true;
       }
