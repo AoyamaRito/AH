@@ -1,0 +1,17 @@
+# Ignore everything except the AH static needed for runtime
+*
+!board-3d/
+!img/
+!.dockerignore
+!Dockerfile
+!.git
+!.gitignore
+
+# Inside board-3d, ignore heavy or dev-only directories if any
+board-3d/server/server.log
+board-3d/server/server.pid
+**/*.psd
+**/*.ai
+**/*.tif
+**/*.tiff
+

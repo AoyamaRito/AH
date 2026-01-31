@@ -23,9 +23,15 @@ type charsResponse struct {
 }
 
 func main() {
-    addr := flag.String("addr", ":8000", "listen address")
+    addr := flag.String("addr", ":8000", "listen address (overridden by $PORT if set)")
     root := flag.String("root", ".", "root directory to serve")
     flag.Parse()
+
+    // Respect PORT from environment (Railway/Heroku style)
+    if p := os.Getenv("PORT"); p != "" {
+        if !strings.HasPrefix(p, ":") { p = ":" + p }
+        *addr = p
+    }
 
     // Normalize root
     absRoot, err := filepath.Abs(*root)
@@ -74,9 +80,16 @@ func main() {
 }
 
 func writeCharsJSON(w http.ResponseWriter, root string) {
-    // Scan AH/img/Chara for images
-    // and build relative paths from AH/board-3d/ (i.e., ../img/Chara/...) to match frontend expectations
+    // Scan for character images with fallback roots
+    // 1) <root>/AH/img/Chara  (when root is project root containing AH/)
+    // 2) <root>/img/Chara     (when root is AH repo root)
     charDir := filepath.Join(root, "AH", "img", "Chara")
+    if _, err := os.Stat(charDir); err != nil {
+        alt := filepath.Join(root, "img", "Chara")
+        if _, err2 := os.Stat(alt); err2 == nil {
+            charDir = alt
+        }
+    }
     var files []string
     exts := map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".webp": true}
 
@@ -87,7 +100,12 @@ func writeCharsJSON(w http.ResponseWriter, root string) {
         if !exts[strings.ToLower(filepath.Ext(info.Name()))] {
             return nil
         }
-        rel, err := filepath.Rel(filepath.Join(root, "AH", "board-3d"), path)
+        // Build relative path from /AH/board-3d to the image file
+        base := filepath.Join(root, "AH", "board-3d")
+        if _, errb := os.Stat(base); errb != nil {
+            base = filepath.Join(root, "board-3d")
+        }
+        rel, err := filepath.Rel(base, path)
         if err != nil {
             return nil
         }
@@ -136,4 +154,3 @@ func securityHeaders(next http.Handler) http.Handler {
         next.ServeHTTP(w, r)
     })
 }
-
