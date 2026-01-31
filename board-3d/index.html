@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AH Board 3D (Prototype)</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0a0f12; }
+    #gl { width: 100vw; height: 100vh; display: block; }
+    #hud { position: absolute; top: 10px; left: 10px; color: #9cf; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 6px; }
+  </style>
+  <!--
+    AI-First V9.4 minimal 3D board prototype for AH
+    - Command-Driven ready: Renderer + matrices kept local (no external deps)
+    - Board only: grid texture on a plane, camera top-down angle
+  -->
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="hud"></div>
+
+  <script>
+  // ===============================
+  // Minimal Math (Mat4)
+  // ===============================
+  const Mat4 = {
+    identity: () => new Float32Array([
+      1,0,0,0,
+      0,1,0,0,
+      0,0,1,0,
+      0,0,0,1
+    ]),
+    multiply: (a, b) => {
+      const out = new Float32Array(16);
+      for (let c=0; c<4; c++) for (let r=0; r<4; r++) {
+        let s = 0; for (let k=0; k<4; k++) s += a[k*4 + r] * b[c*4 + k];
+        out[c*4 + r] = s;
+      }
+      return out;
+    },
+    perspective: (fovy, aspect, near, far) => {
+      const f = 1.0 / Math.tan(fovy/2), nf = 1/(near - far);
+      return new Float32Array([
+        f/aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far+near)*nf, -1,
+        0, 0, (2*far*near)*nf, 0
+      ]);
+    },
+    lookAt: (eye, center, up) => {
+      const sub = (a,b)=>[a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+      const dot = (a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+      const norm = (v)=>{const l=Math.hypot(v[0],v[1],v[2]); return l>0?[v[0]/l,v[1]/l,v[2]/l]:[0,0,0];};
+      const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+      const z = norm(sub(eye, center));
+      const x = norm(cross(up, z));
+      const y = norm(cross(z, x));
+      return new Float32Array([
+        x[0], y[0], z[0], 0,
+        x[1], y[1], z[1], 0,
+        x[2], y[2], z[2], 0,
+        -dot(x, eye), -dot(y, eye), -dot(z, eye), 1
+      ]);
+    },
+    translate: (m, v) => {
+      const out = new Float32Array(m);
+      out[12] = m[0]*v[0] + m[4]*v[1] + m[8]*v[2] + m[12];
+      out[13] = m[1]*v[0] + m[5]*v[1] + m[9]*v[2] + m[13];
+      out[14] = m[2]*v[0] + m[6]*v[1] + m[10]*v[2] + m[14];
+      return out;
+    }
+  };
+
+  // ===============================
+  // Minimal Renderer (WebGL2)
+  // ===============================
+  class Renderer {
+    constructor(canvas) {
+      this.gl = canvas.getContext('webgl2');
+      this.programs = new Map();
+      this.vaos = new Map();
+      this.textures = new Map();
+    }
+    createProgram(id, vs, fs) {
+      const gl = this.gl, p = gl.createProgram();
+      const compile = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); gl.attachShader(p, sh); };
+      compile(gl.VERTEX_SHADER, vs); compile(gl.FRAGMENT_SHADER, fs); gl.linkProgram(p);
+      this.programs.set(id, p);
+    }
+    createMesh(id, positions, uvs) {
+      const gl = this.gl, vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+      const buf = (data, loc, size) => {
+        const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+      };
+      buf(positions, 0, 3);
+      buf(uvs, 1, 2);
+      this.vaos.set(id, { vao, count: positions.length / 3 });
+    }
+    createTexture(id, source, { minFilter = 'NEAREST', magFilter = 'NEAREST', flipY = true, premultiplyAlpha = true } = {}) {
+      const gl = this.gl, tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY ? 1 : 0);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiplyAlpha ? 1 : 0);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      // No repeat needed (we draw exact board to the texture)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter === 'NEAREST' ? gl.NEAREST : gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter === 'NEAREST' ? gl.NEAREST : gl.LINEAR);
+      this.textures.set(id, tex);
+    }
+    execute(cmds, bgColor=[0.05,0.07,0.1]) {
+      const gl = this.gl;
+      gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+      gl.clearColor(bgColor[0], bgColor[1], bgColor[2], 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      cmds.forEach(cmd => {
+        const p = this.programs.get(cmd.pId);
+        const m = this.vaos.get(cmd.mId);
+        const t = this.textures.get(cmd.tId);
+        if (!p || !m) return;
+        gl.useProgram(p);
+        gl.bindVertexArray(m.vao);
+        const uM = gl.getUniformLocation(p, 'u_matrix');
+        gl.uniformMatrix4fv(uM, false, cmd.matrix);
+        if (t) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t); }
+        gl.drawArrays(gl.TRIANGLES, 0, m.count);
+      });
+    }
+  }
+
+  // ===============================
+  // Boot: Board-only Scene
+  // ===============================
+  const canvas = document.getElementById('gl');
+  const hud = document.getElementById('hud');
+  const R = new Renderer(canvas);
+
+  // Shader: textured sprite
+  R.createProgram('sprite', `#version 300 es
+    layout(location=0) in vec4 a_pos; layout(location=1) in vec2 a_uv;
+    uniform mat4 u_matrix; out vec2 v_uv;
+    void main(){ gl_Position = u_matrix * a_pos; v_uv = a_uv; }
+  `, `#version 300 es
+    precision highp float; in vec2 v_uv; uniform sampler2D u_tex; out vec4 o;
+    void main(){ vec4 tex = texture(u_tex, v_uv); if (tex.a < 0.01) discard; o = tex; }
+  `);
+
+  // Parameters (tweakable)
+  const COLS = 10;   // default tiles in X
+  const ROWS = 10;   // default tiles in Z
+  const TILE_SIZE = 1.0; // world units per tile
+  let BOARD = { cols: COLS, rows: ROWS };
+
+  // Create board texture exactly matching tile count
+  function makeBoardTexture(cols, rows) {
+    const px = 64; // pixels per tile
+    const w = cols * px; const h = rows * px;
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    // base
+    g.fillStyle = '#0c1216'; g.fillRect(0,0,w,h);
+    // checker for readability
+    for (let y=0; y<rows; y++) {
+      for (let x=0; x<cols; x++) {
+        if ((x + y) % 2 === 0) {
+          g.fillStyle = '#0e151a';
+          g.fillRect(x*px, y*px, px, px);
+        }
+      }
+    }
+    // grid lines
+    g.strokeStyle = '#2a3640'; g.lineWidth = 2;
+    for (let x=0; x<=cols; x++) { g.beginPath(); g.moveTo(x*px + 0.5, 0); g.lineTo(x*px + 0.5, h); g.stroke(); }
+    for (let y=0; y<=rows; y++) { g.beginPath(); g.moveTo(0, y*px + 0.5); g.lineTo(w, y*px + 0.5); g.stroke(); }
+    // origin highlight
+    g.strokeStyle = '#4fc3f7'; g.lineWidth = 3; g.strokeRect(0.5,0.5,px-1,px-1);
+    return c;
+  }
+
+  // Try to load external board image if available; fallback to procedural grid
+  let IMAGE_URL = '../img/Board_AH2.jpg';
+  let usingImage = false;
+
+  function loadImage(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = url;
+    });
+  }
+
+  function setBoardTextureFromCanvas(cnv) {
+    R.createTexture('tex_board', cnv);
+  }
+
+  function setBoardTextureFromImage(img) {
+    R.createTexture('tex_board', img);
+  }
+
+  // default procedural texture first
+  const texCanvas = makeBoardTexture(COLS, ROWS);
+  setBoardTextureFromCanvas(texCanvas);
+
+  // Build plane geometry centered at origin
+  function buildBoardMesh(widthTiles, heightTiles) {
+    const halfW = (widthTiles * TILE_SIZE) / 2;
+    const halfH = (heightTiles * TILE_SIZE) / 2;
+    const y = 0.0;
+    const positions = [
+      -halfW, y,  halfH,   halfW, y,  halfH,   halfW, y, -halfH,
+      -halfW, y,  halfH,   halfW, y, -halfH,  -halfW, y, -halfH
+    ];
+    const uvs = [ 0,0, 1,0, 1,1,  0,0, 1,1, 0,1 ];
+    R.createMesh('board', positions, uvs);
+  }
+
+  // initial mesh based on COLS/ROWS
+  buildBoardMesh(BOARD.cols, BOARD.rows);
+
+  function updateBoardDims(cols, rows) {
+    if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols<=0 || rows<=0) return;
+    BOARD = { cols, rows };
+    buildBoardMesh(BOARD.cols, BOARD.rows);
+    updateHUD();
+  }
+
+  // Camera
+  function updateCamera() {
+    const w = canvas.width, h = canvas.height;
+    const proj = Mat4.perspective(45 * Math.PI / 180, w / h, 0.1, 1000);
+    // eye a bit above and off to see perspective
+    const dist = Math.max(BOARD.cols, BOARD.rows) * 1.2;
+    const eye = [0, dist, dist];
+    const center = [0, 0, 0];
+    const up = [0, 1, 0];
+    const view = Mat4.lookAt(eye, center, up);
+    return Mat4.multiply(proj, view);
+  }
+
+  // Character support
+  Mat4.scale = (m, s) => {
+    const out = new Float32Array(m);
+    out[0] *= s[0]; out[5] *= s[1]; out[10] *= s[2];
+    return out;
+  };
+  Mat4.translate = (m, v) => {
+    const out = new Float32Array(m);
+    out[12] = m[0]*v[0] + m[4]*v[1] + m[8]*v[2] + m[12];
+    out[13] = m[1]*v[0] + m[5]*v[1] + m[9]*v[2] + m[13];
+    out[14] = m[2]*v[0] + m[6]*v[1] + m[10]*v[2] + m[14];
+    return out;
+  };
+
+  // small centered quad for characters (unit size 1.0)
+  (function createQuadMesh(){
+    const s = 0.5;
+    const pos = [ -s, 0,  s,  s, 0,  s,  s, 0, -s,  -s, 0,  s,  s, 0, -s,  -s, 0, -s ];
+    const uv  = [  0,0, 1,0, 1,1,   0,0, 1,1, 0,1 ];
+    R.createMesh('quad', pos, uv);
+  })();
+
+  const characters = []; // { id, name, imgUrl, pos:{x,y}, textureId }
+
+  function worldFromTile(x, y) {
+    const wx = (x - BOARD.cols/2 + 0.5) * TILE_SIZE;
+    const wz = (y - BOARD.rows/2 + 0.5) * TILE_SIZE;
+    return [wx, 0.01, wz];
+  }
+
+  function makeCharPlaceholderTex(id, label, color="#8cf") {
+    const sz = 256; const c = document.createElement('canvas'); c.width = sz; c.height = sz;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(0,0,0,0)'; g.fillRect(0,0,sz,sz);
+    g.beginPath(); g.arc(sz/2, sz/2, sz*0.42, 0, Math.PI*2); g.fillStyle = 'rgba(30, 60, 80, 0.85)'; g.fill();
+    g.strokeStyle = color; g.lineWidth = 6; g.stroke();
+    g.fillStyle = color; g.font = 'bold 100px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText((label||'?').toUpperCase().slice(0,1), sz/2, sz/2);
+    R.createTexture(id, c);
+  }
+
+  function updateHUD() {
+    hud.textContent = `Board: ${COLS} x ${ROWS}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}`;
+  }
+
+  async function addCharacter(c) {
+    const texId = `tex_char_${c.id}`;
+    if (c.imgUrl) {
+      try {
+        const img = await loadImage(c.imgUrl);
+        R.createTexture(texId, img);
+        c.textureId = texId;
+      } catch (e) {
+        makeCharPlaceholderTex(texId, c.name || c.id);
+        c.textureId = texId;
+      }
+    } else {
+      makeCharPlaceholderTex(texId, c.name || c.id);
+      c.textureId = texId;
+    }
+    characters.push(c);
+    updateHUD();
+  }
+
+  function parseCharFromFilename(path) {
+    try {
+      const imgUrl = path;
+      const base = path.split('/').pop();
+      const nameNoExt = base.replace(/\.[^.]+$/, '');
+      const parts = nameNoExt.split('__');
+      let core = parts.shift();
+      const fields = Object.create(null);
+      for (const p of parts) {
+        const [k, v] = p.split('=');
+        if (!k) continue;
+        fields[k] = v;
+      }
+      const id = fields.id || core.toLowerCase();
+      const xVal = fields.x ?? fields.col;
+      const yVal = fields.y ?? fields.row;
+      const x = Number(xVal);
+      const y = Number(yVal);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null; // require explicit coords
+      return { id, name: fields.name || core, imgUrl, pos: { x, y }, faction: fields.faction, hp: Number(fields.hp||0)||undefined, atk: Number(fields.atk||0)||undefined, range: Number(fields.range||0)||undefined };
+    } catch { return null; }
+  }
+
+  function draw() {
+    const vp = updateCamera();
+    const model = Mat4.identity();
+    const mvp = Mat4.multiply(vp, model);
+    const cmds = [{ pId: 'sprite', mId: 'board', tId: 'tex_board', matrix: mvp }];
+
+    // draw characters
+    const charScale = TILE_SIZE * 0.9;
+    for (const c of characters) {
+      if (!c.textureId) continue;
+      let m = Mat4.identity();
+      m = Mat4.translate(m, worldFromTile(c.pos.x, c.pos.y));
+      m = Mat4.scale(m, [charScale, charScale, charScale]);
+      const cmvp = Mat4.multiply(vp, m);
+      cmds.push({ pId: 'sprite', mId: 'quad', tId: c.textureId, matrix: cmvp });
+    }
+    R.execute(cmds, [0.05, 0.07, 0.1]);
+  }
+
+  function resize() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+
+  function loop() {
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // init
+  async function boot() {
+    // set HUD
+    updateHUD();
+
+    // 1) load optional data/chars.json first (board config + characters)
+    let pendingChars = [];
+    if (location.protocol !== 'file:') {
+      let loaded = false;
+      async function tryLoad(url) {
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) return false;
+          const data = await res.json();
+          if (data.board) {
+            if (Number.isFinite(data.board.cols) && Number.isFinite(data.board.rows)) {
+              updateBoardDims(Number(data.board.cols), Number(data.board.rows));
+            }
+            if (typeof data.board.image === 'string' && data.board.image.length > 0) {
+              IMAGE_URL = data.board.image;
+            }
+          }
+          if (Array.isArray(data.characters)) {
+            pendingChars = data.characters.filter(ch => ch && ch.id && ch.pos);
+          } else if (Array.isArray(data.files)) {
+            for (const f of data.files) {
+              const ch = parseCharFromFilename(f);
+              if (ch) pendingChars.push(ch);
+            }
+          }
+          return true;
+        } catch (_) { return false; }
+      }
+      loaded = await tryLoad('./data/chars.json');
+      if (!loaded) {
+        // Fallback to API endpoint provided by Go server
+        await tryLoad('./api/chars');
+      }
+    }
+
+    // 2) load board image (override from JSON if provided)
+    try {
+      const img = await loadImage(IMAGE_URL);
+      setBoardTextureFromImage(img);
+      if (img.width > 0 && img.height > 0) {
+        const aspectW = BOARD.cols;
+        const aspectH = Math.max(1, Math.round(BOARD.cols * (img.height / img.width)));
+        updateBoardDims(aspectW, aspectH);
+        hud.textContent += `  |  Image: ${IMAGE_URL.split('/').pop()} (${img.width}x${img.height})`;
+        usingImage = true;
+      }
+    } catch (e) {
+      // keep procedural texture
+    }
+
+    // 3) add characters (from JSON/filenames), else sample
+    if (pendingChars.length > 0) {
+      for (const ch of pendingChars) await addCharacter(ch);
+    } else {
+      await addCharacter({ id: 'sample', name: 'S', pos: { x: 2, y: 3 } });
+    }
+
+    // 4) start rendering
+    resize();
+    window.addEventListener('resize', resize);
+    loop();
+  }
+
+  // canvas css size is 100vw/100vh; ensure initial backing store size
+  canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+  boot();
+  </script>
+</body>
+</html>

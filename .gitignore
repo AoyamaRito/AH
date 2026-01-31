@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+**/.DS_Store
+
+# Design sources (too large for GitHub; track via LFS if needed)
+*.psd
+*.psb
+*.ai
+*.tif
+*.tiff
+
+# Build/output/logs
+**/*.log
+board-3d/server/server.log
+board-3d/server/server.pid
+board-3d/server/main
+
+# Editor/IDE
+.idea/
+.vscode/
+

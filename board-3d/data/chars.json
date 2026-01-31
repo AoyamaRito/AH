@@ -1,0 +1,16 @@
+{
+  "board": { "cols": 10, "rows": 10 },
+  "characters": [
+    {
+      "id": "amelda",
+      "name": "Amelda",
+      "imgUrl": "../img/Chara/Amelda.png",
+      "pos": { "x": 1, "y": 1 },
+      "faction": "Foresta",
+      "hp": 10,
+      "atk": 3,
+      "range": 1
+    }
+  ]
+}
+
