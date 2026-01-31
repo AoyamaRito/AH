@@ -71,6 +71,32 @@
     }
   };
 
+  // Matrix inverse (for unproject)
+  Mat4.invert = (m) => {
+    const out = new Float32Array(16);
+    const n11=m[0], n12=m[1], n13=m[2], n14=m[3], n21=m[4], n22=m[5], n23=m[6], n24=m[7], n31=m[8], n32=m[9], n33=m[10], n34=m[11], n41=m[12], n42=m[13], n43=m[14], n44=m[15];
+    const t11 = n23 * n34 * n42 - n24 * n33 * n42 + n24 * n32 * n43 - n22 * n34 * n43 - n23 * n32 * n44 + n22 * n33 * n44;
+    const t12 = n14 * n33 * n42 - n13 * n34 * n42 - n14 * n32 * n43 + n12 * n34 * n43 + n13 * n32 * n44 - n12 * n33 * n44;
+    const t13 = n13 * n24 * n42 - n14 * n23 * n42 + n14 * n22 * n43 - n12 * n24 * n43 - n13 * n22 * n44 + n12 * n23 * n44;
+    const t14 = n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 + n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34;
+    const det = n11 * t11 + n21 * t12 + n31 * t13 + n41 * t14;
+    if (det === 0) return null;
+    const invDet = 1 / det;
+    out[0] = t11 * invDet; out[1] = t12 * invDet; out[2] = t13 * invDet; out[3] = t14 * invDet;
+    out[4] = (n24 * n33 * n41 - n23 * n34 * n41 - n24 * n31 * n43 + n21 * n34 * n43 + n23 * n31 * n44 - n21 * n33 * n44) * invDet;
+    out[5] = (n13 * n34 * n41 - n14 * n33 * n41 + n14 * n31 * n43 - n11 * n34 * n43 - n13 * n31 * n44 + n11 * n33 * n44) * invDet;
+    out[6] = (n14 * n23 * n41 - n13 * n24 * n41 - n14 * n21 * n43 + n11 * n24 * n43 + n13 * n21 * n44 - n11 * n23 * n44) * invDet;
+    out[7] = (n13 * n24 * n31 - n14 * n23 * n31 + n14 * n21 * n33 - n11 * n24 * n33 - n13 * n21 * n34 + n11 * n23 * n34) * invDet;
+    out[8] = (n22 * n34 * n41 - n24 * n32 * n41 + n24 * n31 * n42 - n21 * n34 * n42 - n22 * n31 * n44 + n21 * n32 * n44) * invDet;
+    out[9] = (n14 * n32 * n41 - n12 * n34 * n41 - n14 * n31 * n42 + n11 * n34 * n42 + n12 * n31 * n44 - n11 * n32 * n44) * invDet;
+    out[10] = (n12 * n24 * n41 - n14 * n22 * n41 + n14 * n21 * n42 - n11 * n24 * n42 - n12 * n21 * n44 + n11 * n22 * n44) * invDet;
+    out[11] = (n14 * n22 * n31 - n12 * n24 * n31 - n14 * n21 * n32 + n11 * n24 * n32 + n12 * n21 * n34 - n11 * n22 * n34) * invDet;
+    out[12] = (n23 * n32 * n41 - n22 * n33 * n41 - n23 * n31 * n42 + n21 * n33 * n42 + n22 * n31 * n43 - n21 * n32 * n43) * invDet;
+    out[13] = (n12 * n33 * n41 - n13 * n32 * n41 + n13 * n31 * n42 - n11 * n33 * n42 - n12 * n31 * n43 + n11 * n32 * n43) * invDet;
+    out[14] = (n13 * n22 * n41 - n12 * n23 * n41 - n13 * n21 * n42 + n11 * n23 * n42 + n12 * n21 * n43 - n11 * n22 * n43) * invDet;
+    out[15] = (n12 * n23 * n31 - n13 * n22 * n31 + n13 * n21 * n32 - n11 * n23 * n32 - n12 * n21 * n33 + n11 * n22 * n33) * invDet;
+    return out;
+  };
   // ===============================
   // Minimal Renderer (WebGL2)
   // ===============================
@@ -251,6 +277,38 @@
     const view = Mat4.lookAt(eye, center, up);
     return Mat4.multiply(proj, view);
   }
+  // Mouse hover picking
+  const mouse = { x: 0, y: 0, inside: false };
+  const hover = { x: -1, y: -1 };
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top; mouse.inside = true;
+  });
+  canvas.addEventListener('mouseleave', () => { mouse.inside = false; hover.x = -1; hover.y = -1; });
+
+  function computeHover(vp) {
+    if (!mouse.inside) { hover.x = -1; hover.y = -1; return; }
+    const invVP = Mat4.invert(vp); if (!invVP) { hover.x=-1; hover.y=-1; return; }
+    const ndcX = (mouse.x / canvas.width) * 2 - 1;
+    const ndcY = 1 - (mouse.y / canvas.height) * 2;
+    const unproj = (x, y, z) => {
+      const v = new Float32Array([x, y, z, 1]);
+      const out = new Float32Array(4);
+      for (let c=0; c<4; c++) out[c] = invVP[c*4+0]*v[0] + invVP[c*4+1]*v[1] + invVP[c*4+2]*v[2] + invVP[c*4+3]*v[3];
+      const w = out[3] || 1; return [out[0]/w, out[1]/w, out[2]/w];
+    };
+    const pNear = unproj(ndcX, ndcY, -1);
+    const pFar  = unproj(ndcX, ndcY,  1);
+    const dir = [pFar[0]-pNear[0], pFar[1]-pNear[1], pFar[2]-pNear[2]];
+    const dy = dir[1]; if (Math.abs(dy) < 1e-6) { hover.x=-1; hover.y=-1; return; }
+    const t = -pNear[1] / dy; if (t <= 0) { hover.x=-1; hover.y=-1; return; }
+    const hitX = pNear[0] + dir[0]*t;
+    const hitZ = pNear[2] + dir[2]*t;
+    const xIdx = Math.floor(hitX / TILE_SIZE + BOARD.cols/2);
+    const yIdx = Math.floor(hitZ / TILE_SIZE + BOARD.rows/2);
+    if (xIdx >= 0 && xIdx < BOARD.cols && yIdx >= 0 && yIdx < BOARD.rows) { hover.x = xIdx; hover.y = yIdx; }
+    else { hover.x = -1; hover.y = -1; }
+  }
 
   // Character support
   Mat4.scale = (m, s) => {
@@ -275,6 +333,16 @@
   })();
 
   const characters = []; // { id, name, imgUrl, pos:{x,y}, textureId }
+  // Hover texture
+  (function createHoverTexture(){
+    const sz = 256; const c = document.createElement('canvas'); c.width = sz; c.height = sz;
+    const g = c.getContext('2d'); g.clearRect(0,0,sz,sz);
+    const grd = g.createRadialGradient(sz/2, sz/2, sz*0.1, sz/2, sz/2, sz*0.5);
+    grd.addColorStop(0, 'rgba(255,255,160,0.35)'); grd.addColorStop(1, 'rgba(255,255,160,0.0)');
+    g.fillStyle = grd; g.fillRect(0,0,sz,sz);
+    g.strokeStyle = 'rgba(255,255,160,0.9)'; g.lineWidth = 5; g.strokeRect(6,6,sz-12,sz-12);
+    R.createTexture('tex_hover', c, { minFilter: 'LINEAR', magFilter: 'LINEAR' });
+  })();
 
   // Heuristic: auto-crop black margins from board image
   async function autoCropBlack(img) {
@@ -391,6 +459,17 @@
     const mvp = Mat4.multiply(vp, model);
     const uv = BOARD_UV; const uvRect = [uv.u0, uv.v0, uv.u1, uv.v1];
     const cmds = [{ pId: 'sprite', mId: 'board', tId: 'tex_board', matrix: mvp, uvRect }];
+    computeHover(vp);
+    if (hover.x >= 0) {
+      const s = TILE_SIZE * 1.0;
+      let m = Mat4.identity();
+      const wx = (hover.x - BOARD.cols/2 + 0.5) * TILE_SIZE;
+      const wz = (hover.y - BOARD.rows/2 + 0.5) * TILE_SIZE;
+      m = Mat4.translate(m, [wx, 0.02, wz]);
+      m[0] *= s; m[5] *= s; m[10] *= s;
+      const hmvp = Mat4.multiply(vp, m);
+      cmds.push({ pId: 'sprite', mId: 'quad', tId: 'tex_hover', matrix: hmvp });
+    }
 
     // draw characters
     const charScale = TILE_SIZE * 0.9;
