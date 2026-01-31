@@ -189,6 +189,7 @@
   let BOARD = { cols: COLS, rows: ROWS };
   let BOARD_LOCKED = false; // if true, don't auto-adjust rows from image aspect
   let BOARD_UV = { u0: 0, v0: 0, u1: 1, v1: 1 }; // crop rect within the board image
+  const AUTO_CROP = false; // 黒帯自動トリムを無効化
 
   // Create board texture exactly matching tile count
   function makeBoardTexture(cols, rows) {
@@ -408,7 +409,8 @@
 
   function updateHUD() {
     const uv = BOARD_UV;
-    hud.textContent = `Board: ${BOARD.cols} x ${BOARD.rows}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}  |  uv=(${uv.u0.toFixed(2)},${uv.v0.toFixed(2)}→${uv.u1.toFixed(2)},${uv.v1.toFixed(2)})`;
+    const hoverText = (typeof hover !== 'undefined' && hover.x >= 0) ? `  |  hover=(${hover.x},${hover.y})` : '';
+    hud.textContent = `Board: ${BOARD.cols} x ${BOARD.rows}  |  Tile: ${TILE_SIZE}  |  Chars: ${characters.length}  |  uv=(${uv.u0.toFixed(2)},${uv.v0.toFixed(2)}→${uv.u1.toFixed(2)},${uv.v1.toFixed(2)})${hoverText}`;
   }
 
   async function addCharacter(c) {
@@ -482,6 +484,8 @@
       cmds.push({ pId: 'sprite', mId: 'quad', tId: c.textureId, matrix: cmvp });
     }
     R.execute(cmds, [0.05, 0.07, 0.1]);
+    // 更新ごとにHUDへホバー座標を反映
+    updateHUD();
   }
 
   function resize() {
@@ -551,7 +555,7 @@
           const aspectH = Math.max(1, Math.round(BOARD.cols * (img.height / img.width)));
           updateBoardDims(aspectW, aspectH);
         }
-        if (BOARD_UV.u0 === 0 && BOARD_UV.v0 === 0 && BOARD_UV.u1 === 1 && BOARD_UV.v1 === 1) {
+        if (AUTO_CROP && BOARD_UV.u0 === 0 && BOARD_UV.v0 === 0 && BOARD_UV.u1 === 1 && BOARD_UV.v1 === 1) {
           const crop = await autoCropBlack(img);
           if (crop) BOARD_UV = crop;
         }
